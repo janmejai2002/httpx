@@ -353,3 +353,32 @@ def test_invalid_content_encoding_header():
         content=body,
     )
     assert response.content == body
+
+
+def test_byte_chunker_exact_and_partial_boundaries():
+    from httpx._decoders import ByteChunker
+
+    chunker = ByteChunker(chunk_size=5)
+    # Exact chunk size boundary check: must emit immediately
+    assert chunker.decode(b"12345") == [b"12345"]
+    assert chunker.flush() == []
+
+    # Partial chunk buffering
+    assert chunker.decode(b"123") == []
+    assert chunker.decode(b"4567") == [b"12345"]
+    assert chunker.flush() == [b"67"]
+
+
+def test_text_chunker_exact_and_partial_boundaries():
+    from httpx._decoders import TextChunker
+
+    chunker = TextChunker(chunk_size=5)
+    # Exact chunk size boundary check: must emit immediately
+    assert chunker.decode("12345") == ["12345"]
+    assert chunker.flush() == []
+
+    # Partial chunk buffering
+    assert chunker.decode("123") == []
+    assert chunker.decode("4567") == ["12345"]
+    assert chunker.flush() == ["67"]
+
