@@ -516,3 +516,122 @@ def test_allow_nan_false():
         ValueError, match="Out of range float values are not JSON compliant"
     ):
         httpx.Response(200, json=data_with_inf)
+
+
+@pytest.mark.anyio
+async def test_response_text_content():
+    response = httpx.Response(200, text="Hello, world!")
+    assert isinstance(response.stream, typing.Iterable)
+    assert isinstance(response.stream, typing.AsyncIterable)
+
+    sync_content = b"".join(list(response.stream))
+    async_content = b"".join([part async for part in response.stream])
+
+    assert response.headers == {
+        "Content-Length": "13",
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    assert sync_content == b"Hello, world!"
+    assert async_content == b"Hello, world!"
+
+
+@pytest.mark.anyio
+async def test_response_html_content():
+    response = httpx.Response(200, html="<h1>Hello, world!</h1>")
+    assert isinstance(response.stream, typing.Iterable)
+    assert isinstance(response.stream, typing.AsyncIterable)
+
+    sync_content = b"".join(list(response.stream))
+    async_content = b"".join([part async for part in response.stream])
+
+    assert response.headers == {
+        "Content-Length": "22",
+        "Content-Type": "text/html; charset=utf-8",
+    }
+    assert sync_content == b"<h1>Hello, world!</h1>"
+    assert async_content == b"<h1>Hello, world!</h1>"
+
+
+@pytest.mark.anyio
+async def test_response_empty_text():
+    response = httpx.Response(200, text="")
+    assert response.headers == {
+        "Content-Length": "0",
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    assert response.content == b""
+
+
+@pytest.mark.anyio
+async def test_response_empty_html():
+    response = httpx.Response(200, html="")
+    assert response.headers == {
+        "Content-Length": "0",
+        "Content-Type": "text/html; charset=utf-8",
+    }
+    assert response.content == b""
+
+
+def test_content_dict_rejected():
+    with pytest.raises(TypeError, match="Unexpected type for 'content'"):
+        httpx.Request("POST", "https://example.com", content={"key": "val"})  # type: ignore
+
+
+def test_unattached_stream():
+    from httpx._content import UnattachedStream
+
+    stream = UnattachedStream()
+    with pytest.raises(httpx.StreamClosed):
+        list(stream)
+
+
+@pytest.mark.anyio
+async def test_async_unattached_stream():
+    from httpx._content import UnattachedStream
+
+    stream = UnattachedStream()
+    with pytest.raises(httpx.StreamClosed):
+        _ = [part async for part in stream]
+
+
+@pytest.mark.anyio
+async def test_filelike_large_content():
+    large_payload = b"X" * 150_000
+    filelike = io.BytesIO(large_payload)
+    request = httpx.Request("POST", "https://example.com", content=filelike)
+    assert request.headers["Content-Length"] == "150000"
+
+    chunks = list(request.stream)
+    assert len(chunks) == 3
+    assert len(chunks[0]) == 65_536
+    assert len(chunks[1]) == 65_536
+    assert len(chunks[2]) == 150_000 - (65_536 * 2)
+    assert b"".join(chunks) == large_payload
+
+
+@pytest.mark.anyio
+async def test_async_filelike_large_content():
+    class AsyncLargeFile:
+        def __init__(self, data: bytes) -> None:
+            self._idx = 0
+            self._data = data
+
+        async def aread(self, chunk_size: int) -> bytes:
+            chunk = self._data[self._idx : self._idx + chunk_size]
+            self._idx += chunk_size
+            return chunk
+
+        async def __aiter__(self):
+            yield self._data  # pragma: no cover
+
+    large_payload = b"Y" * 150_000
+    filelike = AsyncLargeFile(large_payload)
+    request = httpx.Request("POST", "https://example.com", content=filelike)  # type: ignore
+    assert request.headers["Transfer-Encoding"] == "chunked"
+
+    chunks = [part async for part in request.stream]
+    assert len(chunks) == 3
+    assert len(chunks[0]) == 65_536
+    assert len(chunks[1]) == 65_536
+    assert len(chunks[2]) == 150_000 - (65_536 * 2)
+    assert b"".join(chunks) == large_payload
